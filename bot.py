@@ -1,12 +1,17 @@
 import os
 import discord
 import asyncio
+import aiohttp
 import json
 import logging
+import re
+import shutil
 from datetime import datetime, timedelta
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 import traceback
+from bs4 import BeautifulSoup
+import urllib.parse
 import random
 from typing import Dict, Optional, List
 import time
@@ -19,7 +24,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from dataclasses import dataclass
 
 # Load environment variables
@@ -84,7 +89,7 @@ class ShipData:
     mmsi: Optional[str] = None
 
 class MinimalShipTracker:
-    def __init__(self, headless: bool = True, screenshot_dir: str = SCREENSHOT_DIR):
+    def __init__(self, headless: bool = False, screenshot_dir: str = SCREENSHOT_DIR):
         self.headless = headless
         self.screenshot_dir = Path(screenshot_dir)
         self.screenshot_dir.mkdir(exist_ok=True)
@@ -151,7 +156,7 @@ class MinimalShipTracker:
             logger.info(f"Attempting to get {FRIEND_NAME}'s ship coordinates...")
             
             # First take a screenshot of the initial state
-            self.take_screenshot("initial_state")
+            # self.take_screenshot("initial_state")
             
             # Get the dimensions of the visible part of the page
             window_width = self.driver.execute_script("return window.innerWidth")
@@ -173,19 +178,19 @@ class MinimalShipTracker:
             logger.info("*** PERFORMING FIRST RIGHT-CLICK ***")
             actions = ActionChains(self.driver)
             actions.context_click().perform()
-            time.sleep(2)
+            # time.sleep(2)
             
             # Take screenshot after first right-click
-            self.take_screenshot("after_first_right_click")
+            # self.take_screenshot("after_first_right_click")
             
             # Second right-click
             logger.info("*** PERFORMING SECOND RIGHT-CLICK ***")
             actions = ActionChains(self.driver)
             actions.context_click().perform()
-            time.sleep(2)
+            # time.sleep(2)
             
             # Take screenshot after second right-click
-            self.take_screenshot("after_second_right_click")
+            # self.take_screenshot("after_second_right_click")
             
             # Look specifically for the exact "Get Coordinates" element you provided
             exact_selectors = [
@@ -198,7 +203,7 @@ class MinimalShipTracker:
             ]
             
             # Take screenshot of the context menu
-            self.take_screenshot("context_menu")
+            # self.take_screenshot("context_menu")
             
             menu_item_found = False
             
@@ -216,7 +221,7 @@ class MinimalShipTracker:
                             element.click()
                             logger.info("Clicked on menu item")
                             menu_item_found = True
-                            time.sleep(2)
+                            time.sleep(1)
                             break
                     
                     if menu_item_found:
@@ -232,7 +237,7 @@ class MinimalShipTracker:
                     self.driver.execute_script("mySTmap_command.getCoordinates();")
                     logger.info("Executed getCoordinates function via JavaScript")
                     menu_item_found = True
-                    time.sleep(2)
+                    time.sleep(1)
                 except Exception as e:
                     logger.warning(f"Error executing JavaScript: {e}")
             
@@ -532,7 +537,7 @@ class ShipFileTracker:
             logger.info(f"Starting Selenium tracker to get fresh coordinates for {FRIEND_NAME}'s journey...")
             
             # Use the MinimalShipTracker to get fresh data
-            tracker = MinimalShipTracker(headless=False)
+            tracker = MinimalShipTracker(headless=True)
             ship_data = tracker.extract_ship_data(mmsi)
             
             # Save the new data to a JSON file
@@ -674,21 +679,21 @@ def create_ship_embed(ship_data):
     
     # Add file storage info
     all_files = ship_tracker.get_all_json_files(SHIP_MMSI)
-    embed.add_field(
-        name="📊 Data Storage",
-        value=f"Storing {len(all_files)}/{MAX_JSON_FILES} journey logs",
-        inline=True
-    )
+    # embed.add_field(
+    #     name="📊 Data Storage",
+    #     value=f"Storing {len(all_files)}/{MAX_JSON_FILES} journey logs",
+    #     inline=True
+    # )
     
     # Next automatic update info
-    if next_update:
-        time_until = next_update - datetime.utcnow()
-        if time_until.total_seconds() > 0:
-            embed.add_field(
-                name="⏱️ Next Update",
-                value=f"In {time_until.days} days, {time_until.seconds // 3600} hours",
-                inline=True
-            )
+    # if next_update:
+        # time_until = next_update - datetime.utcnow()
+        # if time_until.total_seconds() > 0:
+            # embed.add_field(
+            #     name="⏱️ Next Update",
+            #     value=f"In {time_until.days} days, {time_until.seconds // 3600} hours",
+            #     inline=True
+            # )
     
     embed.set_footer(
         text=f"Tracking {FRIEND_NAME}'s journey across the seas. We miss you, friend! 🌊",
