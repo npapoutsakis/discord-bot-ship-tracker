@@ -1,0 +1,14 @@
+2025-06-14 20:32:57,501 - discord.client - INFO - logging in using static token
+2025-06-14 20:33:00,106 - discord.gateway - INFO - Shard ID None has connected to Gateway (Session ID: 5b7d383576314509abc673e987eda9c7).
+2025-06-14 20:33:02,110 - __main__ - INFO - Logged in as ShipTrackerBot#8750
+2025-06-14 20:33:02,110 - __main__ - INFO - Tracking ship: Kanakaris (MMSI: 538010457)
+2025-06-14 20:33:02,110 - __main__ - INFO - Updates every 48 hours
+2025-06-14 20:33:02,110 - __main__ - INFO - Ship tracking loop will run every 48 hours
+2025-06-14 20:33:02,110 - __main__ - INFO - Running scheduled ship update
+2025-06-14 20:33:02,110 - __main__ - INFO - Fetching ship data...
+2025-06-14 20:33:02,272 - __main__ - INFO - No real data available, generating mock data for testing
+2025-06-14 20:33:02,582 - __main__ - INFO - Ship update sent successfully. Next update: 2025-06-16 17:33:02.582272
+2025-06-14 20:35:35,362 - __main__ - ERROR - Command error: Command "stio" is not found
+2025-06-14 20:35:56,793 - __main__ - ERROR - Command error: Command raised an exception: AttributeError: 'Context' object has no attribute 'edit_message'
+2025-06-14 20:36:30,874 - __main__ - ERROR - Command error: Command raised an exception: AttributeError: 'Context' object has no attribute 'edit_message'
+2025-06-14 20:42:54,967 - __main__ - INFO - Cleaning up resources...
