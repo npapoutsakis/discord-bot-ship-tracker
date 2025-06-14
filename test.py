@@ -1,41 +1,23 @@
-"""
-    Professional Ship Tracking Data Extractor
-    Automates data collection from myshiptracking.com with consent handling and OCR processing
-"""
-
 import time
-import re
 import logging
-from datetime import datetime
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, Any
+from datetime import datetime
+from typing import Optional, Tuple
 from pathlib import Path
 
-import cv2
-import numpy as np
-import pytesseract
 from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('ship_tracker.log'),
-        logging.StreamHandler()
-    ]
-)
+# Configure basic logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class ShipData:
@@ -44,570 +26,312 @@ class ShipData:
     speed: Optional[str] = None
     course: Optional[str] = None
     status: Optional[str] = None
+    ship_type: Optional[str] = None
     coordinates: Optional[Tuple[float, float]] = None
     timestamp: Optional[str] = None
     mmsi: Optional[str] = None
 
-
-class ShipTrackingExtractor:
-    """Professional ship tracking data extractor with automated consent handling"""
-    
-    def __init__(self, headless: bool = False, screenshot_dir: str = "screenshots"):
+class MinimalShipTracker:
+    def __init__(self, headless: bool = False):
         self.headless = headless
-        self.screenshot_dir = Path(screenshot_dir)
-        self.screenshot_dir.mkdir(exist_ok=True)
         self.driver = None
-        self.wait = None
-        
-    def setup_driver(self) -> None:
-        """Initialize Chrome WebDriver with optimal settings"""
-        try:
-            chrome_options = Options()
-            
-            # Performance and stability options
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            # chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--window-size=1920,1080")
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            
-            if self.headless:
-                chrome_options.add_argument("--headless")
-            
-            # User agent to appear more legitimate
-            # chrome_options.add_argument(
-            #     "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            #     "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            # )
-            
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            
-            self.wait = WebDriverWait(self.driver, 20)
-            logger.info("WebDriver initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize WebDriver: {e}")
-            raise
-    
-    def debug_consent_elements(self) -> None:
-        """Debug method to identify consent-related elements on the page"""
-        try:
-            logger.info("=== DEBUGGING CONSENT ELEMENTS ===")
-            
-            # Get page source for analysis
-            page_source = self.driver.page_source.lower()
-            
-            # Check for consent-related keywords in page source
-            consent_keywords = ['consent', 'cookie', 'privacy', 'gdpr', 'agree', 'accept', 'personal data']
-            found_keywords = [keyword for keyword in consent_keywords if keyword in page_source]
-            logger.info(f"Found consent keywords in page: {found_keywords}")
-            
-            # Find all button elements
-            buttons = self.driver.find_elements(By.TAG_NAME, "button")
-            logger.info(f"Found {len(buttons)} button elements")
-            
-            for i, button in enumerate(buttons[:20]):  # Limit to first 20 buttons
-                try:
-                    if button.is_displayed():
-                        text = button.text.strip()
-                        classes = button.get_attribute('class')
-                        onclick = button.get_attribute('onclick')
-                        button_id = button.get_attribute('id')
-                        
-                        logger.info(f"Button {i+1}: text='{text}', class='{classes}', id='{button_id}', onclick='{onclick}'")
-                        
-                        # Check if this might be a consent button
-                        if any(keyword in text.lower() for keyword in ['agree', 'accept', 'ok', 'consent', 'continue']):
-                            logger.info(f"  -> POTENTIAL CONSENT BUTTON!")
-                except Exception as e:
-                    logger.debug(f"Error analyzing button {i+1}: {e}")
-            
-            # Find all input elements
-            inputs = self.driver.find_elements(By.TAG_NAME, "input")
-            logger.info(f"Found {len(inputs)} input elements")
-            
-            for i, inp in enumerate(inputs[:10]):  # Limit to first 10 inputs
-                try:
-                    if inp.is_displayed() and inp.get_attribute('type') in ['button', 'submit']:
-                        value = inp.get_attribute('value')
-                        classes = inp.get_attribute('class')
-                        inp_id = inp.get_attribute('id')
-                        
-                        logger.info(f"Input {i+1}: value='{value}', class='{classes}', id='{inp_id}'")
-                        
-                        if value and any(keyword in value.lower() for keyword in ['agree', 'accept', 'ok', 'consent']):
-                            logger.info(f"  -> POTENTIAL CONSENT INPUT!")
-                except Exception as e:
-                    logger.debug(f"Error analyzing input {i+1}: {e}")
-            
-            # Look for divs/spans with onclick or role=button
-            clickable_divs = self.driver.find_elements(By.XPATH, "//div[@onclick or @role='button'] | //span[@onclick or @role='button']")
-            logger.info(f"Found {len(clickable_divs)} clickable div/span elements")
-            
-            for i, div in enumerate(clickable_divs[:10]):
-                try:
-                    if div.is_displayed():
-                        text = div.text.strip()
-                        classes = div.get_attribute('class')
-                        role = div.get_attribute('role')
-                        
-                        logger.info(f"Clickable div/span {i+1}: text='{text}', class='{classes}', role='{role}'")
-                        
-                        if any(keyword in text.lower() for keyword in ['agree', 'accept', 'ok', 'consent']):
-                            logger.info(f"  -> POTENTIAL CONSENT DIV/SPAN!")
-                except Exception as e:
-                    logger.debug(f"Error analyzing clickable div/span {i+1}: {e}")
-                    
-            logger.info("=== END CONSENT DEBUGGING ===")
-            
-        except Exception as e:
-            logger.error(f"Error in debug_consent_elements: {e}")
 
-    def handle_consent_banner(self) -> bool:
-        """Handle the consent banner with specific focus on fc-dialog-container"""
+    def setup_driver(self):
+        """Initialize Chrome WebDriver with minimal settings"""
+        chrome_options = Options()
+        if self.headless:
+            chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--window-size=1280,720")
+        
+        
+        service = Service(ChromeDriverManager().install())
+        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        logger.info("WebDriver initialized")
+    
+    
+    def handle_consent_banner(self):
+        """Simple consent banner handler - clicks first consent/accept button found"""
         try:
-            logger.info("Waiting for fc-dialog-container consent popup...")
+            elements = self.driver.find_elements(By.XPATH, "//button[contains(@class, 'fc-button')]")
+            if elements:
+                for element in elements:
+                    if element.is_displayed():
+                        element.click()
+                        return True
+
+            logger.info("No consent banner detected or couldn't handle it")
+        except Exception as e:
             
-            # Wait for the page to load
-            time.sleep(5)
+            logger.warning(f"Error handling consent: {e}")
+        
+        return False
+
+    
+    def get_coordinates(self) -> Optional[Tuple[float, float]]:
+        """Extract coordinates by double right-clicking and selecting the exact 'Get Coordinates' menu item"""
+        try:
+            logger.info("Attempting to get coordinates...")
             
-            # Take a screenshot to see what's on the page
-            self.take_screenshot("before_consent")
+            # First take a screenshot of the initial state
+            self.driver.save_screenshot("initial_state.png")
+            logger.info("Saved initial state screenshot")
             
-            # First, specifically target the fc-dialog-container
-            try:
-                logger.info("Looking for fc-dialog-container...")
-                
-                # Wait for the fc-dialog-container to appear
-                dialog_container = WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "fc-dialog-container"))
-                )
-                
-                logger.info("Found fc-dialog-container!")
-                
-                # Look for buttons within the fc-dialog-container
-                fc_consent_selectors = [
-                    # Within fc-dialog-container, look for consent buttons
-                    "//div[contains(@class, 'fc-dialog-container')]//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'agree')]",
-                    "//div[contains(@class, 'fc-dialog-container')]//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept')]",
-                    "//div[contains(@class, 'fc-dialog-container')]//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'consent')]",
-                    "//div[contains(@class, 'fc-dialog-container')]//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'allow')]",
-                    "//div[contains(@class, 'fc-dialog-container')]//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ok')]",
-                    
-                    # Look for specific fc-button classes
-                    "//div[contains(@class, 'fc-dialog-container')]//button[contains(@class, 'fc-button')]",
-                    "//div[contains(@class, 'fc-dialog-container')]//button[contains(@class, 'fc-cta-consent')]",
-                    "//div[contains(@class, 'fc-dialog-container')]//button[contains(@class, 'fc-primary-button')]",
-                    
-                    # Look for any button in the dialog
-                    "//div[contains(@class, 'fc-dialog-container')]//button",
-                    
-                    # Look for input buttons
-                    "//div[contains(@class, 'fc-dialog-container')]//input[@type='button']",
-                    "//div[contains(@class, 'fc-dialog-container')]//input[@type='submit']",
-                    
-                    # Look for clickable divs/spans within dialog
-                    "//div[contains(@class, 'fc-dialog-container')]//*[@onclick or @role='button']"
-                ]
-                
-                for i, selector in enumerate(fc_consent_selectors):
-                    try:
-                        logger.info(f"Trying fc-dialog selector {i+1}: {selector}")
-                        
-                        elements = self.driver.find_elements(By.XPATH, selector)
-                        
-                        for element in elements:
-                            if element.is_displayed():
-                                # Get element info for logging
-                                text = element.text.strip()
-                                classes = element.get_attribute('class')
-                                tag_name = element.tag_name
-                                
-                                logger.info(f"Found clickable element: {tag_name}, text='{text}', class='{classes}'")
-                                
-                                # Scroll to element
-                                self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
-                                time.sleep(1)
-                                
-                                # Try different click methods
-                                click_success = False
-                                try:
-                                    element.click()
-                                    click_success = True
-                                    logger.info("Clicked with regular click()")
-                                except:
-                                    try:
-                                        self.driver.execute_script("arguments[0].click();", element)
-                                        click_success = True
-                                        logger.info("Clicked with JavaScript click()")
-                                    except:
-                                        try:
-                                            ActionChains(self.driver).move_to_element(element).click().perform()
-                                            click_success = True
-                                            logger.info("Clicked with ActionChains")
-                                        except:
-                                            logger.warning("All click methods failed for this element")
-                                
-                                if click_success:
-                                    logger.info("Successfully clicked consent button in fc-dialog-container!")
-                                    time.sleep(3)
-                                    self.take_screenshot("after_fc_consent")
-                                    
-                                    # Verify dialog is gone
-                                    try:
-                                        WebDriverWait(self.driver, 5).until(
-                                            EC.invisibility_of_element_located((By.CLASS_NAME, "fc-dialog-container"))
-                                        )
-                                        logger.info("fc-dialog-container disappeared - consent handled successfully!")
-                                        return True
-                                    except:
-                                        logger.info("Dialog still visible, but click was successful")
-                                        return True
-                                
-                        if not elements:
-                            logger.debug(f"No elements found for selector: {selector}")
-                            
-                    except Exception as e:
-                        logger.debug(f"fc-dialog selector {i+1} failed: {e}")
-                        continue
-                
-            except TimeoutException:
-                logger.info("fc-dialog-container not found, trying fallback selectors...")
+            # Get the dimensions of the visible part of the page
+            window_width = self.driver.execute_script("return window.innerWidth")
+            window_height = self.driver.execute_script("return window.innerHeight")
             
-            # Fallback to general consent selectors
-            general_consent_selectors = [
-                # Text-based selectors (case insensitive)
-                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'agree')]",
-                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept')]",
-                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ok')]",
-                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'allow')]",
-                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'consent')]",
-                
-                # Input buttons
-                "//input[@type='button' and contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'agree')]",
-                "//input[@type='submit' and contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'agree')]",
-                
-                # Class-based selectors
-                "//*[contains(@class, 'consent-agree')]",
-                "//*[contains(@class, 'cookie-accept')]",
-                "//*[contains(@class, 'gdpr-accept')]",
-                "//*[contains(@class, 'privacy-accept')]"
+            # Calculate the middle point
+            middle_x = window_width // 2
+            middle_y = window_height // 2
+            
+            logger.info(f"Page dimensions: {window_width}x{window_height}, middle point: ({middle_x}, {middle_y})")
+            
+            # Move to the middle of the page
+            actions = ActionChains(self.driver)
+            actions.move_by_offset(middle_x, middle_y).perform()
+            logger.info("Moved to the middle of the page")
+            time.sleep(1)
+            
+            # First right-click
+            logger.info("*** PERFORMING FIRST RIGHT-CLICK ***")
+            actions = ActionChains(self.driver)
+            actions.context_click().perform()
+            # time.sleep(2)
+            
+            # Take screenshot after first right-click
+            self.driver.save_screenshot("after_first_right_click.png")
+            logger.info("Saved after first right-click screenshot")
+            
+            # Second right-click
+            logger.info("*** PERFORMING SECOND RIGHT-CLICK ***")
+            actions = ActionChains(self.driver)
+            actions.context_click().perform()
+            # time.sleep(2)
+            
+            # Take screenshot after second right-click
+            self.driver.save_screenshot("after_second_right_click.png")
+            logger.info("Saved after second right-click screenshot")
+            
+            # Look specifically for the exact "Get Coordinates" element you provided
+            # This is now the EXACT selector for the element you showed
+            exact_selectors = [
+                "//a[contains(@class, 'dropdown-item') and contains(@onclick, 'mySTmap_command.getCoordinates') and contains(text(), 'Get Coordinates')]",
+                "//a[contains(@onclick, 'mySTmap_command.getCoordinates')]",
+                "//a[contains(@class, 'dropdown-item') and contains(text(), 'Get Coordinates')]",
+                # Fallback to more generic selectors
+                "//a[contains(text(), 'Get Coordinates')]",
+                "//a[contains(@class, 'dropdown-item')]"
             ]
             
-            # Try general selectors as fallback
-            for i, selector in enumerate(general_consent_selectors):
+            # Take screenshot of the context menu
+            self.driver.save_screenshot("context_menu.png")
+            logger.info("Saved context menu screenshot")
+            
+            menu_item_found = False
+            
+            for selector in exact_selectors:
                 try:
-                    logger.info(f"Trying general selector {i+1}/{len(general_consent_selectors)}: {selector}")
+                    logger.info(f"Looking for menu item with selector: {selector}")
+                    elements = self.driver.find_elements(By.XPATH, selector)
                     
-                    element = WebDriverWait(self.driver, 3).until(
-                        EC.element_to_be_clickable((By.XPATH, selector))
-                    )
-                    
-                    # Scroll to element if needed
-                    self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
-                    time.sleep(1)
-                    
-                    # Try multiple click methods
-                    try:
-                        element.click()
-                        logger.info(f"General consent clicked successfully - selector: {selector}")
-                    except:
-                        try:
-                            self.driver.execute_script("arguments[0].click();", element)
-                            logger.info(f"General consent clicked with JS - selector: {selector}")
-                        except:
-                            ActionChains(self.driver).move_to_element(element).click().perform()
-                            logger.info(f"General consent clicked with ActionChains - selector: {selector}")
-                    
-                    time.sleep(3)
-                    self.take_screenshot("after_general_consent")
-                    return True
-                    
-                except TimeoutException:
-                    continue
-                except Exception as e:
-                    logger.debug(f"General selector {i+1} failed: {e}")
-                    continue
-            
-            # Final fallback: look for any clickable element with consent-related text
-            try:
-                logger.info("Trying fallback approach - searching for any consent-related clickable elements")
-                
-                # Get all potentially clickable elements
-                clickable_elements = self.driver.find_elements(By.XPATH, 
-                    "//button | //input[@type='button'] | //input[@type='submit'] | "
-                    "//*[@onclick] | //*[@role='button'] | //a[contains(@href, '#')]"
-                )
-                
-                for element in clickable_elements:
-                    try:
-                        if element.is_displayed():
-                            text = element.text.lower()
-                            value = element.get_attribute('value')
-                            if value:
-                                text += " " + value.lower()
-                            
-                            # Check if element contains consent-related keywords
-                            consent_keywords = ['agree', 'accept', 'consent', 'ok', 'allow', 'continue']
-                            if any(keyword in text for keyword in consent_keywords):
-                                logger.info(f"Found potential consent element with text: '{text}'")
-                                
-                                # Try to click it
-                                self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
-                                time.sleep(1)
-                                self.driver.execute_script("arguments[0].click();", element)
-                                logger.info("Consent handled with fallback approach")
-                                time.sleep(3)
-                                self.take_screenshot("after_consent_fallback")
-                                return True
-                    except:
-                        continue
+                    if len(elements) > 0:
+                        logger.info(f"Found {len(elements)} potential menu items")
                         
-            except Exception as e:
-                logger.error(f"Fallback approach failed: {e}")
+                    for element in elements:
+                        if element.is_displayed():
+                            logger.info(f"Found visible menu item: '{element.text}' using selector {selector}")
+                            element.click()
+                            logger.info("Clicked on menu item")
+                            menu_item_found = True
+                            time.sleep(1)
+                            break
+                    
+                    if menu_item_found:
+                        break
+                except Exception as e:
+                    logger.warning(f"Error with selector {selector}: {e}")
+                    continue
             
-            # Ultimate fallback: check if consent banner is blocking and try to dismiss
+            # If we still didn't find the menu item, try JavaScript execution
+            if not menu_item_found:
+                logger.info("Trying to execute the getCoordinates function directly via JavaScript")
+                try:
+                    self.driver.execute_script("mySTmap_command.getCoordinates();")
+                    logger.info("Executed getCoordinates function via JavaScript")
+                    menu_item_found = True
+                    time.sleep(2)
+                except Exception as e:
+                    logger.warning(f"Error executing JavaScript: {e}")
+            
+            # Take screenshot after clicking menu item or executing JavaScript
+            self.driver.save_screenshot("after_menu_interaction.png")
+            logger.info("Saved after menu interaction screenshot")
+            
+            # Try to extract coordinates from Swal2 alert
+            coordinates = None
             try:
-                # Look for overlay or modal elements
-                overlays = self.driver.find_elements(By.XPATH, 
-                    "//*[contains(@class, 'overlay') or contains(@class, 'modal') or "
-                    "contains(@class, 'popup') or contains(@class, 'dialog')]"
-                )
-                
-                for overlay in overlays:
-                    if overlay.is_displayed():
-                        # Try to find close button or click outside
-                        close_buttons = overlay.find_elements(By.XPATH, 
-                            ".//button | .//input[@type='button'] | .//*[@role='button']"
-                        )
-                        if close_buttons:
-                            for btn in close_buttons:
-                                try:
-                                    btn.click()
-                                    logger.info("Dismissed overlay/modal")
-                                    time.sleep(2)
-                                    return True
-                                except:
-                                    continue
-            except:
-                pass
+                swal_title = self.driver.find_element(By.ID, "swal2-title")
+                if swal_title.is_displayed() and "Coordinates" in swal_title.text:
+                    logger.info("Found Swal2 alert with coordinates")
+                    
+                    # Take screenshot of coordinates dialog
+                    self.driver.save_screenshot("coordinates_dialog.png")
+                    logger.info("Saved coordinates dialog screenshot")
+                    
+                    # Get coordinates from content
+                    swal_content = self.driver.find_element(By.ID, "swal2-content")
+                    coord_text = swal_content.text
+                    logger.info(f"Swal2 content: {coord_text}")
+                    
+                    # Extract coordinates using regex
+                    import re
+                    numbers = re.findall(r'-?\d+\.\d+', coord_text)
+                    if len(numbers) >= 2:
+                        lat = float(numbers[0])
+                        lon = float(numbers[1])
+                        coordinates = (lat, lon)
+                        logger.info(f"Extracted coordinates: {coordinates}")
+                        
+                        # Take final screenshot with coordinates
+                        self.driver.save_screenshot("extracted_coordinates.png")
+                        logger.info("Saved final screenshot with coordinates")
+                        
+                        # Close the dialog by clicking OK button
+                        try:
+                            ok_button = self.driver.find_element(By.XPATH, 
+                                "//button[contains(@class, 'swal2-confirm')]")
+                            ok_button.click()
+                            logger.info("Closed Swal2 alert")
+                        except:
+                            logger.warning("Could not close Swal2 alert")
+                    else:
+                        logger.warning("Could not extract coordinates from text")
+            except NoSuchElementException:
+                logger.warning("Swal2 alert elements not found")
             
-            logger.warning("Could not find or handle consent banner")
-            self.take_screenshot("consent_not_found")
-            return False
-            
+            return coordinates
+        
         except Exception as e:
-            logger.error(f"Error handling consent banner: {e}")
-            self.take_screenshot("consent_error")
-            return False
-    
-    def take_screenshot(self, filename: str) -> str:
-        """Take a screenshot and save it"""
-        try:
-            filepath = self.screenshot_dir / f"{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-            self.driver.save_screenshot(str(filepath))
-            logger.info(f"Screenshot saved: {filepath}")
-            return str(filepath)
-        except Exception as e:
-            logger.error(f"Failed to take screenshot: {e}")
-            raise
-    
-    def extract_text_from_image(self, image_path: str) -> str:
-        """Extract text from image using OCR with preprocessing"""
-        try:
-            # Read image
-            image = cv2.imread(image_path)
-            
-            # Preprocessing for better OCR
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            
-            # Noise removal
-            denoised = cv2.medianBlur(gray, 3)
-            
-            # Thresholding
-            _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            
-            # OCR configuration
-            custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,°:- '
-            
-            text = pytesseract.image_to_string(thresh, config=custom_config)
-            logger.info("OCR text extraction completed")
-            return text
-            
-        except Exception as e:
-            logger.error(f"OCR processing failed: {e}")
-            return ""
-    
-    def parse_ship_data(self, ocr_text: str, mmsi: str) -> ShipData:
-        """Parse ship data from OCR text using regex patterns"""
+            logger.error(f"Error in coordinates extraction: {e}")
+            return None
+
+
+
+
+    def extract_ship_data(self, mmsi: str) -> ShipData:
+        """Extract ship data using precise DOM selectors"""
+        url = f"https://www.myshiptracking.com/?mmsi={mmsi}"
         ship_data = ShipData(mmsi=mmsi, timestamp=datetime.now().isoformat())
         
         try:
-            # Patterns for different data fields
-            patterns = {
-                'name': [
-                    r'Name[:\s]+([A-Z\s]+)',
-                    r'Vessel[:\s]+([A-Z\s]+)',
-                    r'Ship[:\s]+([A-Z\s]+)'
-                ],
-                'speed': [
-                    r'Speed[:\s]+([\d.]+)\s*(?:kn|knots?)',
-                    r'SOG[:\s]+([\d.]+)',
-                    r'Speed\s*(?:over\s*ground)?[:\s]+([\d.]+)'
-                ],
-                'course': [
-                    r'Course[:\s]+([\d.]+)\s*(?:°|deg)',
-                    r'COG[:\s]+([\d.]+)',
-                    r'Heading[:\s]+([\d.]+)'
-                ],
-                'status': [
-                    r'Status[:\s]+([A-Za-z\s]+)',
-                    r'Navigation[:\s]+Status[:\s]+([A-Za-z\s]+)',
-                    r'Condition[:\s]+([A-Za-z\s]+)'
-                ]
+            self.setup_driver()
+            self.driver.get(url)
+            WebDriverWait(self.driver, 10).until(
+                lambda d: d.execute_script('return document.readyState') == 'complete'
+            )
+            time.sleep(1)
+            
+            self.handle_consent_banner()
+            selectors = {
+                'speed': {
+                    'method': By.ID,
+                    'value': "cval-sog",
+                    'process': lambda x: x.replace('Knots', '').strip()
+                },
+                'course': {
+                    'method': By.ID, 
+                    'value': "cval-cog",
+                    'process': lambda x: x.replace('°', '').strip()
+                },
+                'status': {
+                    'method': By.XPATH,
+                    'value': "//div[text()='Status']/following-sibling::div[@class='font-weight-bold']",
+                    'process': lambda x: x.strip()
+                },
+                'ship_type': {
+                    'method': By.XPATH,
+                    'value': "//div[text()='Type']/following-sibling::div[@class='font-weight-bold']",
+                    'process': lambda x: x.strip()
+                }
             }
             
-            for field, field_patterns in patterns.items():
-                for pattern in field_patterns:
-                    match = re.search(pattern, ocr_text, re.IGNORECASE)
-                    if match:
-                        value = match.group(1).strip()
-                        setattr(ship_data, field, value)
-                        logger.info(f"Extracted {field}: {value}")
-                        break
-            
-        except Exception as e:
-            logger.error(f"Error parsing ship data: {e}")
-        
-        return ship_data
-    
-    def get_ship_coordinates(self) -> Optional[Tuple[float, float]]:
-        """Extract coordinates by right-clicking on the ship twice"""
-        try:
-            logger.info("Attempting to extract coordinates...")
-            
-            # Look for ship icon or marker on the map
-            ship_selectors = [
-                "//div[contains(@class, 'ship')]",
-                "//div[contains(@class, 'vessel')]",
-                "//div[contains(@class, 'marker')]",
-                "//*[contains(@title, 'MMSI')]"
-            ]
-            
-            ship_element = None
-            for selector in ship_selectors:
+            # Extract each field using its selector
+            for field, selector_info in selectors.items():
                 try:
-                    ship_element = self.driver.find_element(By.XPATH, selector)
-                    if ship_element.is_displayed():
-                        break
-                except NoSuchElementException:
-                    continue
+                    element = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((selector_info['method'], selector_info['value']))
+                    )
+                    value = selector_info['process'](element.text)
+                    setattr(ship_data, field, value)
+                    logger.info(f"Extracted {field}: {value}")
+                except Exception as e:
+                    logger.warning(f"Could not extract {field}: {e}")
             
-            if not ship_element:
-                logger.warning("Could not find ship element on map")
-                return None
+            try:
+                # First try the exact ID from your HTML
+                name_element = self.driver.find_element(By.ID, "mapPopupTitle")
+                if name_element and name_element.text:
+                    ship_data.name = name_element.text.strip()
+                    logger.info(f"Extracted name from mapPopupTitle: {ship_data.name}")
+            except NoSuchElementException:
+                logger.warning("mapPopupTitle element not found, trying alternative approaches")
+                
+                try:
+                    # Find and click on ship marker to make the popup appear
+                    markers = self.driver.find_elements(By.CSS_SELECTOR, ".ship-marker, .vessel-marker, .leaflet-marker-icon")
+                    for marker in markers:
+                        if marker.is_displayed():
+                            logger.info("Clicking on ship marker to reveal popup")
+                            marker.click()
+                            time.sleep(1)
+                            
+                            # Now try to get the name again
+                            try:
+                                name_element = WebDriverWait(self.driver, 3).until(
+                                    EC.presence_of_element_located((By.ID, "mapPopupTitle"))
+                                )
+                                ship_data.name = name_element.text.strip()
+                                logger.info(f"Extracted name after clicking: {ship_data.name}")
+                                break
+                            except:
+                                logger.warning("mapPopupTitle still not found after clicking marker")
+                except Exception as e:
+                    logger.warning(f"Error clicking ship marker: {e}")
+                
+                # If still not found, try to get from title or other elements
+                if not ship_data.name:
+                    # Try page title
+                    page_title = self.driver.title
+                    if "myshiptracking" in page_title.lower() and "-" in page_title:
+                        ship_name_part = page_title.split("-")[0].strip()
+                        ship_data.name = ship_name_part
+                        logger.info(f"Extracted name from title: {ship_data.name}")
             
-            # Perform double right-click
-            actions = ActionChains(self.driver)
-            actions.context_click(ship_element).perform()
-            time.sleep(1)
-            actions.context_click(ship_element).perform()
-            time.sleep(2)
-            
-            # Try to extract coordinates from context menu or popup
-            coord_patterns = [
-                r'(\d+\.?\d*)[°\s]*[NS][,\s]+(\d+\.?\d*)[°\s]*[EW]',
-                r'Lat[:\s]+(-?\d+\.?\d*)[,\s]+Lon[:\s]+(-?\d+\.?\d*)',
-                r'Position[:\s]+(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)'
-            ]
-            
-            page_source = self.driver.page_source
-            for pattern in coord_patterns:
-                match = re.search(pattern, page_source, re.IGNORECASE)
-                if match:
-                    lat, lon = float(match.group(1)), float(match.group(2))
-                    logger.info(f"Extracted coordinates: {lat}, {lon}")
-                    return (lat, lon)
-            
-            # Take screenshot after right-click for manual inspection
-            self.take_screenshot("after_rightclick")
-            
-        except Exception as e:
-            logger.error(f"Error extracting coordinates: {e}")
-        
-        return None
-    
-    def extract_ship_data(self, mmsi: str) -> ShipData:
-        """Main method to extract all ship data"""
-        url = f"https://www.myshiptracking.com/?mmsi={mmsi}"
-        
-        try:
-            logger.info(f"Starting data extraction for MMSI: {mmsi}")
-            self.setup_driver()
-            
-            # Navigate to URL
-            logger.info(f"Navigating to: {url}")
-            self.driver.get(url)
-            time.sleep(5)
-            
-            # Handle consent banner
-            consent_handled = self.handle_consent_banner()
-            if not consent_handled:
-                logger.warning("Consent banner not handled - running debug analysis")
-                self.debug_consent_elements()
-                # Try one more time after debugging
-                time.sleep(2)
-                self.handle_consent_banner()
-            
-            time.sleep(3)
-            
-            # Take initial screenshot
-            initial_screenshot = self.take_screenshot("initial_page")
-            
-            # Extract text using OCR
-            ocr_text = self.extract_text_from_image(initial_screenshot)
-            
-            # Parse ship data
-            ship_data = self.parse_ship_data(ocr_text, mmsi)
-            
-            # Extract coordinates
-            coordinates = self.get_ship_coordinates()
+            # Get coordinates using the double right-click method
+            coordinates = self.get_coordinates()
             ship_data.coordinates = coordinates
             
-            # Take final screenshot
-            self.take_screenshot("final_page")
-            
-            logger.info("Data extraction completed successfully")
             return ship_data
             
         except Exception as e:
-            logger.error(f"Error during data extraction: {e}")
-            raise
+            logger.error(f"Error extracting data: {e}")
+            return ship_data
         finally:
             if self.driver:
                 self.driver.quit()
                 logger.info("WebDriver closed")
     
-    def save_data(self, ship_data: ShipData, filename: str = None) -> None:
+
+    def save_data(self, ship_data: ShipData, filename: str = None):
         """Save extracted data to JSON file"""
         import json
         
         if not filename:
             filename = f"ship_data_{ship_data.mmsi}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         
-        data_dict = {
-            'mmsi': ship_data.mmsi,
-            'name': ship_data.name,
-            'speed': ship_data.speed,
-            'course': ship_data.course,
-            'status': ship_data.status,
-            'coordinates': ship_data.coordinates,
-            'timestamp': ship_data.timestamp
-        }
+        # Convert dataclass to dictionary
+        data_dict = {k: v if v is not None else "N/A" for k, v in ship_data.__dict__.items()}
         
         with open(filename, 'w') as f:
             json.dump(data_dict, f, indent=2)
@@ -615,30 +339,26 @@ class ShipTrackingExtractor:
         logger.info(f"Data saved to: {filename}")
 
 
-def main():
-    """Example usage"""
-    extractor = ShipTrackingExtractor(headless=False)  # Set to True for headless mode
+def main(mmsi):
+    """Minimal example usage"""
+    tracker = MinimalShipTracker(headless=True)
     
-    try:
-        # Extract data for the specified MMSI
-        mmsi = "538010457"
-        ship_data = extractor.extract_ship_data(mmsi)
-        
-        # Display results
-        print(f"\n=== Ship Data for MMSI: {mmsi} ===")
-        print(f"Name: {ship_data.name}")
-        print(f"Speed: {ship_data.speed}")
-        print(f"Course: {ship_data.course}")
-        print(f"Status: {ship_data.status}")
-        print(f"Coordinates: {ship_data.coordinates}")
-        print(f"Timestamp: {ship_data.timestamp}")
-        
-        # Save data
-        extractor.save_data(ship_data)
-        
-    except Exception as e:
-        logger.error(f"Application error: {e}")
+    # Extract data
+    ship_data = tracker.extract_ship_data(mmsi)
+    
+    # Display results
+    print(f"\n=== Ship Data for MMSI: {mmsi} ===")
+    print(f"Name: {ship_data.name}")
+    print(f"Type: {ship_data.ship_type}")
+    print(f"Speed: {ship_data.speed}")
+    print(f"Course: {ship_data.course}")
+    print(f"Status: {ship_data.status}")
+    print(f"Coordinates: {ship_data.coordinates}")
+    print(f"Timestamp: {ship_data.timestamp}")
+    
+    # Save data
+    tracker.save_data(ship_data)
 
 
 if __name__ == "__main__":
-    main()
+    main(mmsi = "538010457")
