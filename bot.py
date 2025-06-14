@@ -24,7 +24,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException
 from dataclasses import dataclass
 
 # Load environment variables
@@ -33,13 +33,13 @@ load_dotenv()
 # Configuration
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))
-SHIP_MMSI = os.getenv("SHIP_MMSI", "538010457")  # Default MMSI
-SHIP_NAME = os.getenv("SHIP_NAME", "STI MAESTRO")  # Default ship name
+SHIP_MMSI = os.getenv("SHIP_MMSI", "538010457")
+SHIP_NAME = os.getenv("SHIP_NAME", "STI MAESTRO")
 UPDATE_INTERVAL_HOURS = 48  # Fixed at 2 days (48 hours)
-JSON_DIRECTORY = os.getenv("JSON_DIRECTORY", "ship_data")  # Directory to store JSON files
-SCREENSHOT_DIR = os.getenv("SCREENSHOT_DIR", "screenshots")  # Directory for screenshots
-FRIEND_NAME = os.getenv("FRIEND_NAME", "Kanakaris")  # Our friend's name
-MAX_JSON_FILES = 5  # Maximum number of JSON files to keep
+JSON_DIRECTORY = os.getenv("JSON_DIRECTORY", "ship_data")
+SCREENSHOT_DIR = os.getenv("SCREENSHOT_DIR", "screenshots")
+FRIEND_NAME = os.getenv("FRIEND_NAME", "Kanakaris")
+MAX_JSON_FILES = 5
 
 # Setup logging
 logging.basicConfig(
@@ -789,7 +789,7 @@ async def automatic_update():
         except:
             pass
 
-# Cleanup task that runs daily to clean up files
+
 @tasks.loop(hours=24)
 async def daily_cleanup():
     try:
@@ -805,7 +805,7 @@ async def daily_cleanup():
     except Exception as e:
         logger.error(f"Error in daily cleanup task: {e}")
 
-# Event hook when bot is ready
+
 @bot.event
 async def on_ready():
     logger.info(f"Bot connected as {bot.user}")
@@ -828,31 +828,23 @@ async def on_ready():
         daily_cleanup.start()
         logger.info("Daily cleanup task started.")
 
-# Only command to get the latest info about Kanakaris
+
 @bot.command(name='kanakaris')
 async def kanakaris_command(ctx):
     """Gets information about Kanakaris's journey"""
     await ctx.send(f"⚓ Looking for {FRIEND_NAME}'s vessel on the high seas...")
     
-    # Get the latest data from existing JSON (we don't get new data on manual requests)
     ship_data = await ship_tracker.fetch_ship_data(SHIP_MMSI)
     
     if ship_data:
-        # Create and send the embed with the latest saved data
         embed = create_ship_embed(ship_data)
         await ctx.send(f"📡 Update from {FRIEND_NAME}'s journey:", embed=embed)
     else:
-        # If no data available, let the user know
         await ctx.send(f"❌ Unable to contact {FRIEND_NAME}'s vessel. The seas are vast, but we'll keep trying.")
-        
-        # Try to get fresh data since we don't have any saved data
         await ctx.send(f"Attempting to establish contact with {FRIEND_NAME}'s vessel. This may take a moment...")
-        
         try:
-            # Get fresh coordinates
             ship_data = await ship_tracker.fetch_new_coordinates(SHIP_MMSI)
             
-            # Clean up screenshots after we're done
             await cleanup_all_screenshots()
             
             if ship_data and (ship_data.get('coordinates') or (ship_data.get('latitude') and ship_data.get('longitude'))):
@@ -874,14 +866,6 @@ async def kanakaris_command(ctx):
 # Run the bot
 if __name__ == '__main__':
     try:
-        # Print current date/time and user info
-        print(f"Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): 2025-06-14 22:11:57")
-        print(f"Current User's Login: npapoutsakis")
-        print(f"Starting journey tracker for {FRIEND_NAME}'s vessel (MMSI: {SHIP_MMSI})")
-        print(f"Automatic updates will occur every {UPDATE_INTERVAL_HOURS} hours (2 days)")
-        print(f"Keeping only the {MAX_JSON_FILES} most recent JSON files")
-        print(f"Daily cleanup process will run automatically")
-        
         bot.run(DISCORD_TOKEN)
     except Exception as e:
         logger.critical(f"Failed to start bot: {e}")
