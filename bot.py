@@ -72,83 +72,14 @@ class ShipTracker:
             
     async def fetch_ship_data(self, mmsi):
         """Fetch ship data from maritime tracking sources"""
+        try:
             # Try multiple sources for reliability
             sources = [
                 self._fetch_from_marinetraffic,
                 self._fetch_from_vesselfinder,
                 self._fetch_from_myshiptracking,
-                self._fetch_from_aisstream
+                self._fetch_from_aisstream,
             ]
-    
-    async def search_ship_by_name(self, ship_name):
-        """Search for a ship by name to get MMSI"""
-        session = await self.get_session()
-        
-        try:
-            # Search on MarineTraffic
-            search_url = f"https://www.marinetraffic.com/en/ais/index/search/all"
-            params = {'keyword': ship_name}
-            
-            async with session.get(search_url, params=params) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Look for search results with MMSI numbers
-                    mmsi_matches = re.findall(r'mmsi[:\s]*(\d{9})', html, re.IGNORECASE)
-                    if mmsi_matches:
-                        logger.info(f"Found MMSI candidates for '{ship_name}': {mmsi_matches}")
-                        return mmsi_matches[0]  # Return first match
-                        
-            # Try VesselFinder search
-            vf_search_url = f"https://www.vesselfinder.com/vessels?name={urllib.parse.quote(ship_name)}"
-            async with session.get(vf_search_url) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    mmsi_matches = re.findall(r'mmsi[:\s]*(\d{9})', html, re.IGNORECASE)
-                    if mmsi_matches:
-                        logger.info(f"Found MMSI from VesselFinder: {mmsi_matches[0]}")
-                        return mmsi_matches[0]
-                        
-        except Exception as e:
-            logger.error(f"Error searching for ship by name: {e}")
-            
-        return None
-        """Fetch data from AISStream or similar real-time AIS service"""
-        session = await self.get_session()
-        
-        try:
-            # Try to get data from public AIS APIs or websites
-            # This is an example URL - replace with actual working endpoint
-            url = f"https://www.marinetraffic.com/vesselDetails/latestPosition/mmsi:{mmsi}/json"
-            
-            async with session.get(url) as response:
-                if response.status == 200:
-                    try:
-                        data = await response.json()
-                        if data and len(data) > 0:
-                            vessel = data[0] if isinstance(data, list) else data
-                            
-                            return {
-                                'name': vessel.get('SHIPNAME', SHIP_NAME),
-                                'mmsi': mmsi,
-                                'latitude': float(vessel.get('LAT', 0)),
-                                'longitude': float(vessel.get('LON', 0)),
-                                'speed': float(vessel.get('SPEED', 0)),
-                                'course': int(vessel.get('COURSE', 0)),
-                                'heading': int(vessel.get('HEADING', 0)),
-                                'status': vessel.get('STATUS', 'Unknown'),
-                                'destination': vessel.get('DESTINATION', 'Unknown'),
-                                'last_update': datetime.utcnow().isoformat(),
-                                'source': 'AIS Stream'
-                            }
-                    except json.JSONDecodeError:
-                        pass
-                        
-        except Exception as e:
-            logger.error(f"Error fetching from AIS stream: {e}")
-            
-        return None
             
             for source in sources:
                 try:
