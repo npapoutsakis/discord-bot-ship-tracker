@@ -6,6 +6,9 @@ import json
 import logging
 import re
 import shutil
+import platform
+import subprocess
+import sys
 from datetime import datetime, timedelta
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
@@ -24,8 +27,9 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from dataclasses import dataclass
+import chromedriver_autoinstaller
 
 # Load environment variables
 load_dotenv()
@@ -33,13 +37,13 @@ load_dotenv()
 # Configuration
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))
-SHIP_MMSI = os.getenv("SHIP_MMSI", "538010457")
-SHIP_NAME = os.getenv("SHIP_NAME", "STI MAESTRO")
+SHIP_MMSI = os.getenv("SHIP_MMSI", "538010457")  # Default MMSI
+SHIP_NAME = os.getenv("SHIP_NAME", "STI MAESTRO")  # Default ship name
 UPDATE_INTERVAL_HOURS = 48  # Fixed at 2 days (48 hours)
-JSON_DIRECTORY = os.getenv("JSON_DIRECTORY", "ship_data")
-SCREENSHOT_DIR = os.getenv("SCREENSHOT_DIR", "screenshots")
-FRIEND_NAME = os.getenv("FRIEND_NAME", "Kanakaris")
-MAX_JSON_FILES = 5
+JSON_DIRECTORY = os.getenv("JSON_DIRECTORY", "ship_data")  # Directory to store JSON files
+SCREENSHOT_DIR = os.getenv("SCREENSHOT_DIR", "screenshots")  # Directory for screenshots
+FRIEND_NAME = os.getenv("FRIEND_NAME", "Kanakaris")  # Our friend's name
+MAX_JSON_FILES = 5  # Maximum number of JSON files to keep
 
 # Setup logging
 logging.basicConfig(
@@ -76,6 +80,36 @@ farewell_messages = [
     "We'll miss you, but we celebrate your new adventure!"
 ]
 
+def setup_chrome_for_render():
+    """Setup Chrome for Render.com deployment"""
+    if 'RENDER' in os.environ:
+        # Running on Render.com
+        logger.info("Detected Render.com environment, setting up Chrome...")
+        
+        # Install Chrome
+        subprocess.Popen(
+            'wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - '
+            '&& echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list '
+            '&& apt-get update -y '
+            '&& apt-get install -y google-chrome-stable',
+            shell=True
+        )
+        
+        logger.info("Chrome installation commands executed")
+        
+        # Set path for Chrome binary
+        chrome_path = "/usr/bin/google-chrome-stable"
+        if os.path.exists(chrome_path):
+            logger.info(f"Chrome binary found at {chrome_path}")
+        else:
+            logger.warning(f"Chrome binary not found at {chrome_path}")
+            
+        # Auto-install ChromeDriver
+        chromedriver_autoinstaller.install()
+        
+        return chrome_path
+    return None
+
 @dataclass
 class ShipData:
     """Data structure for ship information"""
@@ -89,7 +123,7 @@ class ShipData:
     mmsi: Optional[str] = None
 
 class MinimalShipTracker:
-    def __init__(self, headless: bool = False, screenshot_dir: str = SCREENSHOT_DIR):
+    def __init__(self, headless: bool = True, screenshot_dir: str = SCREENSHOT_DIR):
         self.headless = headless
         self.screenshot_dir = Path(screenshot_dir)
         self.screenshot_dir.mkdir(exist_ok=True)
@@ -99,14 +133,36 @@ class MinimalShipTracker:
     def setup_driver(self):
         """Initialize Chrome WebDriver with minimal settings"""
         chrome_options = Options()
-        if self.headless:
-            chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--window-size=1280,720")
         
-        service = Service(ChromeDriverManager().install())
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
-        logger.info("WebDriver initialized")
+        # Setup for Render.com
+        chrome_binary = setup_chrome_for_render()
+        if chrome_binary:
+            chrome_options.binary_location = chrome_binary
+        
+        # Add these additional options for cloud environments
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-infobars')
+        
+        try:
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            logger.info("WebDriver initialized")
+        except Exception as e:
+            logger.error(f"Error initializing WebDriver: {e}")
+            # Fall back to alternative WebDriver setup
+            try:
+                logger.info("Trying alternative ChromeDriver setup...")
+                chromedriver_path = chromedriver_autoinstaller.install()
+                self.driver = webdriver.Chrome(executable_path=chromedriver_path, options=chrome_options)
+                logger.info("WebDriver initialized using alternative method")
+            except Exception as e2:
+                logger.error(f"Alternative WebDriver setup also failed: {e2}")
+                raise
     
     def handle_consent_banner(self):
         """Simple consent banner handler - clicks first consent/accept button found"""
@@ -151,12 +207,12 @@ class MinimalShipTracker:
         """Extract coordinates by double right-clicking and selecting 'Get Coordinates'"""
         try:
             # Log the current date/time and user info
-            logger.info("Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): 2025-06-14 22:11:57")
+            logger.info("Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): 2025-06-14 23:17:03")
             logger.info("Current User's Login: npapoutsakis")
             logger.info(f"Attempting to get {FRIEND_NAME}'s ship coordinates...")
             
             # First take a screenshot of the initial state
-            # self.take_screenshot("initial_state")
+            self.take_screenshot("initial_state")
             
             # Get the dimensions of the visible part of the page
             window_width = self.driver.execute_script("return window.innerWidth")
@@ -178,19 +234,19 @@ class MinimalShipTracker:
             logger.info("*** PERFORMING FIRST RIGHT-CLICK ***")
             actions = ActionChains(self.driver)
             actions.context_click().perform()
-            # time.sleep(2)
+            time.sleep(2)
             
             # Take screenshot after first right-click
-            # self.take_screenshot("after_first_right_click")
+            self.take_screenshot("after_first_right_click")
             
             # Second right-click
             logger.info("*** PERFORMING SECOND RIGHT-CLICK ***")
             actions = ActionChains(self.driver)
             actions.context_click().perform()
-            # time.sleep(2)
+            time.sleep(2)
             
             # Take screenshot after second right-click
-            # self.take_screenshot("after_second_right_click")
+            self.take_screenshot("after_second_right_click")
             
             # Look specifically for the exact "Get Coordinates" element you provided
             exact_selectors = [
@@ -203,7 +259,7 @@ class MinimalShipTracker:
             ]
             
             # Take screenshot of the context menu
-            # self.take_screenshot("context_menu")
+            self.take_screenshot("context_menu")
             
             menu_item_found = False
             
@@ -221,7 +277,7 @@ class MinimalShipTracker:
                             element.click()
                             logger.info("Clicked on menu item")
                             menu_item_found = True
-                            time.sleep(1)
+                            time.sleep(2)
                             break
                     
                     if menu_item_found:
@@ -237,7 +293,7 @@ class MinimalShipTracker:
                     self.driver.execute_script("mySTmap_command.getCoordinates();")
                     logger.info("Executed getCoordinates function via JavaScript")
                     menu_item_found = True
-                    time.sleep(1)
+                    time.sleep(2)
                 except Exception as e:
                     logger.warning(f"Error executing JavaScript: {e}")
             
@@ -679,21 +735,21 @@ def create_ship_embed(ship_data):
     
     # Add file storage info
     all_files = ship_tracker.get_all_json_files(SHIP_MMSI)
-    # embed.add_field(
-    #     name="📊 Data Storage",
-    #     value=f"Storing {len(all_files)}/{MAX_JSON_FILES} journey logs",
-    #     inline=True
-    # )
+    embed.add_field(
+        name="📊 Data Storage",
+        value=f"Storing {len(all_files)}/{MAX_JSON_FILES} journey logs",
+        inline=True
+    )
     
     # Next automatic update info
-    # if next_update:
-        # time_until = next_update - datetime.utcnow()
-        # if time_until.total_seconds() > 0:
-            # embed.add_field(
-            #     name="⏱️ Next Update",
-            #     value=f"In {time_until.days} days, {time_until.seconds // 3600} hours",
-            #     inline=True
-            # )
+    if next_update:
+        time_until = next_update - datetime.utcnow()
+        if time_until.total_seconds() > 0:
+            embed.add_field(
+                name="⏱️ Next Update",
+                value=f"In {time_until.days} days, {time_until.seconds // 3600} hours",
+                inline=True
+            )
     
     embed.set_footer(
         text=f"Tracking {FRIEND_NAME}'s journey across the seas. We miss you, friend! 🌊",
@@ -789,7 +845,7 @@ async def automatic_update():
         except:
             pass
 
-
+# Cleanup task that runs daily to clean up files
 @tasks.loop(hours=24)
 async def daily_cleanup():
     try:
@@ -805,7 +861,7 @@ async def daily_cleanup():
     except Exception as e:
         logger.error(f"Error in daily cleanup task: {e}")
 
-
+# Event hook when bot is ready
 @bot.event
 async def on_ready():
     logger.info(f"Bot connected as {bot.user}")
@@ -828,23 +884,31 @@ async def on_ready():
         daily_cleanup.start()
         logger.info("Daily cleanup task started.")
 
-
+# Only command to get the latest info about Kanakaris
 @bot.command(name='kanakaris')
 async def kanakaris_command(ctx):
     """Gets information about Kanakaris's journey"""
     await ctx.send(f"⚓ Looking for {FRIEND_NAME}'s vessel on the high seas...")
     
+    # Get the latest data from existing JSON (we don't get new data on manual requests)
     ship_data = await ship_tracker.fetch_ship_data(SHIP_MMSI)
     
     if ship_data:
+        # Create and send the embed with the latest saved data
         embed = create_ship_embed(ship_data)
         await ctx.send(f"📡 Update from {FRIEND_NAME}'s journey:", embed=embed)
     else:
+        # If no data available, let the user know
         await ctx.send(f"❌ Unable to contact {FRIEND_NAME}'s vessel. The seas are vast, but we'll keep trying.")
+        
+        # Try to get fresh data since we don't have any saved data
         await ctx.send(f"Attempting to establish contact with {FRIEND_NAME}'s vessel. This may take a moment...")
+        
         try:
+            # Get fresh coordinates
             ship_data = await ship_tracker.fetch_new_coordinates(SHIP_MMSI)
             
+            # Clean up screenshots after we're done
             await cleanup_all_screenshots()
             
             if ship_data and (ship_data.get('coordinates') or (ship_data.get('latitude') and ship_data.get('longitude'))):
@@ -866,6 +930,14 @@ async def kanakaris_command(ctx):
 # Run the bot
 if __name__ == '__main__':
     try:
+        # Print current date/time and user info
+        print(f"Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): 2025-06-14 23:17:03")
+        print(f"Current User's Login: npapoutsakis")
+        print(f"Starting journey tracker for {FRIEND_NAME}'s vessel (MMSI: {SHIP_MMSI})")
+        print(f"Automatic updates will occur every {UPDATE_INTERVAL_HOURS} hours (2 days)")
+        print(f"Keeping only the {MAX_JSON_FILES} most recent JSON files")
+        print(f"Daily cleanup process will run automatically")
+        
         bot.run(DISCORD_TOKEN)
     except Exception as e:
         logger.critical(f"Failed to start bot: {e}")
