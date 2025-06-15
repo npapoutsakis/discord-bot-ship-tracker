@@ -1,2 +1,5 @@
 ship_data/*
 /ship_data.log
+/.env
+/screenshots
+/bot.log
